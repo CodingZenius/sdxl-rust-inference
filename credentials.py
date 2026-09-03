@@ -14,6 +14,10 @@ class CredentialManager:
     HF_TOKEN_ENV = "HF_TOKEN"
     CIVITAI_TOKEN_ENV = "CIVITAI_TOKEN"
 
+    # Baked default URLs
+    DEFAULT_HF_MODEL_URL = "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
+    DEFAULT_CIVITAI_LORA_URL = "https://civitai.red/models/1731769/bimbo-makeup-by-stable-yogi?modelVersionId=1959982"
+
     @classmethod
     def get_hf_token(cls) -> str:
         token = os.getenv(cls.HF_TOKEN_ENV)
@@ -29,8 +33,14 @@ class CredentialManager:
         return os.getenv(cls.CIVITAI_TOKEN_ENV)
 
     @classmethod
-    def validate(cls) -> dict:
+    def validate(cls, target_url: Optional[str] = None) -> dict:
+        """
+        Validates presence of auth tokens, optionally accepting a target URL
+        or falling back to the baked default HF URL.
+        """
+        url = target_url or cls.DEFAULT_HF_MODEL_URL
         status = {
+            "target_url": url,
             "hf_token_present": bool(os.getenv(cls.HF_TOKEN_ENV)),
             "civitai_token_present": bool(os.getenv(cls.CIVITAI_TOKEN_ENV)),
         }
@@ -47,15 +57,20 @@ class HuggingFaceDownloader:
     def __init__(self):
         self.token = CredentialManager.get_hf_token()
 
-    def download_model(self, model_id: str, cache_dir: Path = None) -> Path:
+    def download_model(self, model_id: Optional[str] = None, cache_dir: Path = None) -> Path:
         from huggingface_hub import snapshot_download
+
+        model_ref = model_id or CredentialManager.DEFAULT_HF_MODEL_URL
+        # Extract repo ID if a full URL was provided
+        if "huggingface.co/" in model_ref:
+            model_ref = urlparse(model_ref).path.strip("/")
 
         cache_dir = cache_dir or Path("/tmp/sdxl_models")
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"Downloading {model_id} from HF Hub...")
+        print(f"Downloading {model_ref} from HF Hub...")
         model_path = snapshot_download(
-            model_id,
+            model_ref,
             token=self.token,
             cache_dir=str(cache_dir),
             repo_type="model",
@@ -70,19 +85,20 @@ class CivitaiDownloader:
     def __init__(self):
         self.token = CredentialManager.get_civitai_token()
 
-    def download_model(self, url: str, cache_dir: Path = None) -> Path:
+    def download_model(self, url: Optional[str] = None, cache_dir: Path = None) -> Path:
         import requests
 
+        target_url = url or CredentialManager.DEFAULT_CIVITAI_LORA_URL
         cache_dir = cache_dir or Path("/tmp/sdxl_models")
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"Downloading from Civitai: {url}")
+        print(f"Downloading from Civitai: {target_url}")
 
         headers = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        response = requests.get(url, headers=headers, stream=True)
+        response = requests.get(target_url, headers=headers, stream=True)
         response.raise_for_status()
 
         filename = None
@@ -91,7 +107,7 @@ class CivitaiDownloader:
             filename = disposition.split("filename=")[-1].strip('"\'')
 
         if not filename:
-            filename = urlparse(url).path.split("/")[-1] or "model.safetensors"
+            filename = urlparse(target_url).path.split("/")[-1] or "model.safetensors"
 
         output_path = cache_dir / filename
         total_size = int(response.headers.get("content-length", 0))
